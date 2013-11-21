@@ -1,0 +1,293 @@
+public class StringLoader {
+	private final RequestQueue mRequestQueue;
+
+	private int mBatchResponseDelayMs = 100;
+
+	private final StringCache mCache;
+
+	private final HashMap<String, BatchedStringRequest> mInFlightRequests = new HashMap<String, BatchedStringRequest>();
+
+	private final HashMap<String, BatchedStringRequest> mBatchedResponses = new HashMap<String, BatchedStringRequest>();
+
+	private final Handler mHandler = new Handler(Looper.getMainLooper());
+
+	private Runnable mRunnable;
+
+	public StringLoader(RequestQueue queue, StringCache stringCache) {
+		mRequestQueue = queue;
+		mCache = stringCache;
+	}
+
+	public static StringListener getStringListener(final TextView view, final int defaultStringResId,
+			final int errorStringResId) {
+		return new StringListener() {
+			@Override
+			public void onErrorResponse(VolleyError error) {
+				if (errorStringResId != 0) {
+					view.setText(errorStringResId);
+				}
+			}
+
+			@Override
+			public void onResponse(StringContainer response, boolean isImmediate) {
+				if (response.getString() != null) {
+					view.setText(response.getString());
+				} else if (defaultStringResId != 0) {
+					view.setText(defaultStringResId);
+				}
+			}
+		};
+	}
+
+	public boolean isCached(String requestUrl) {
+		throwIfNotOnMainThread();
+
+		String cacheKey = getCacheKey(requestUrl);
+		return mCache.getString(cacheKey) != null;
+	}
+
+	public StringContainer get(String requestUrl, final StringListener listener) {
+		return get(requestUrl, listener, false);
+	}
+
+	public StringContainer get(String requestUrl, StringListener stringListener, boolean force) {
+		// only fulfill requests that were initiated from the main thread.
+		throwIfNotOnMainThread();
+
+		final String cacheKey = getCacheKey(requestUrl);
+
+		// Try to look up the request in the cache of remote images.
+		if (!force) {
+			String cachedString = mCache.getString(cacheKey);
+			if (cachedString != null) {
+				// Return the cached bitmap.
+				StringContainer container = new StringContainer(cachedString, requestUrl, null, null);
+				stringListener.onResponse(container, true);
+				return container;
+			}
+		}
+
+		// The string did not exist in the cache, fetch it!
+		StringContainer stringContainer = new StringContainer(null, requestUrl, cacheKey, stringListener);
+
+		// Update the caller to let them know that they should use the default string.
+		stringListener.onResponse(stringContainer, true);
+
+		// Check to see if a request is already in-flight.
+		BatchedStringRequest request = mInFlightRequests.get(cacheKey);
+		if (request != null) {
+			// If it is, add this request to the list of listeners.
+			request.addContainer(stringContainer);
+			return stringContainer;
+		}
+
+		// The request is not already in flight. Send the new request to the network and
+		// track it.
+		Request<?> newRequest = new StringRequest(requestUrl, new Listener<String>() {
+			@Override
+			public void onResponse(String response) {
+				onGetStringSuccess(cacheKey, response);
+			}
+		}, new ErrorListener() {
+			@Override
+			public void onErrorResponse(VolleyError error) {
+				onGetStringError(cacheKey, error);
+			}
+		});
+
+		mRequestQueue.add(newRequest);
+		mInFlightRequests.put(cacheKey, new BatchedStringRequest(newRequest, stringContainer));
+		return stringContainer;
+	}
+
+	public void setBatchedResponseDelay(int newBatchedResponseDelayMs) {
+		mBatchResponseDelayMs = newBatchedResponseDelayMs;
+	}
+
+	private void onGetStringSuccess(String cacheKey, String response) {
+		// cache the image that was fetched.
+		mCache.putString(cacheKey, response);
+
+		// remove the request from the list of in-flight requests.
+		BatchedStringRequest request = mInFlightRequests.remove(cacheKey);
+
+		if (request != null) {
+			// Update the response bitmap.
+			request.mResponseString = response;
+
+			// Send the batched response
+			batchResponse(cacheKey, request, null);
+		}
+	}
+
+	private void onGetStringError(String cacheKey, VolleyError error) {
+		// Notify the requesters that something failed via a null result.
+		// Remove this request from the list of in-flight requests.
+		BatchedStringRequest request = mInFlightRequests.remove(cacheKey);
+
+		if (request != null) {
+			// Send the batched response
+			batchResponse(cacheKey, request, error);
+		}
+	}
+
+	public class StringContainer {
+		private String mString;
+
+		private final StringListener mListener;
+
+		/** The cache key that was associated with the request */
+		private final String mCacheKey;
+
+		/** The request URL that was specified */
+		private final String mRequestUrl;
+
+		/**
+		 * Constructs a StringContainer object.
+		 * 
+		 * @param bitmap
+		 *            The final string (if it exists).
+		 * @param requestUrl
+		 *            The requested URL for this container.
+		 * @param cacheKey
+		 *            The cache key that identifies the requested URL for this container.
+		 */
+		public StringContainer(String string, String requestUrl, String cacheKey, StringListener listener) {
+			mString = string;
+			mRequestUrl = requestUrl;
+			mCacheKey = cacheKey;
+			mListener = listener;
+		}
+
+		/**
+		 * Releases interest in the in-flight request (and cancels it if no one else is listening).
+		 */
+		public void cancelRequest() {
+			if (mListener == null) {
+				return;
+			}
+
+			BatchedStringRequest request = mInFlightRequests.get(mCacheKey);
+			if (request != null) {
+				boolean canceled = request.removeContainerAndCancelIfNecessary(this);
+				if (canceled) {
+					mInFlightRequests.remove(mCacheKey);
+				}
+			} else {
+				// check to see if it is already batched for delivery.
+				request = mBatchedResponses.get(mCacheKey);
+				if (request != null) {
+					request.removeContainerAndCancelIfNecessary(this);
+					if (request.mContainers.size() == 0) {
+						mBatchedResponses.remove(mCacheKey);
+					}
+				}
+			}
+		}
+
+		/**
+		 * Returns the bitmap associated with the request URL if it has been loaded, null otherwise.
+		 */
+		public String getString() {
+			return mString;
+		}
+
+		/**
+		 * Returns the requested URL for this container.
+		 */
+		public String getRequestUrl() {
+			return mRequestUrl;
+		}
+	}
+
+	private class BatchedStringRequest {
+		/** The request being tracked */
+		private final Request<?> mRequest;
+
+		/** The result of the request being tracked by this item */
+		private String mResponseString;
+
+		/** List of all of the active ImageContainers that are interested in the request */
+		private final LinkedList<StringContainer> mContainers = new LinkedList<StringContainer>();
+
+		/**
+		 * Constructs a new BatchedImageRequest object
+		 * 
+		 * @param request
+		 *            The request being tracked
+		 * @param container
+		 *            The ImageContainer of the person who initiated the request.
+		 */
+		public BatchedStringRequest(Request<?> request, StringContainer container) {
+			mRequest = request;
+			mContainers.add(container);
+		}
+
+		/**
+		 * Adds another ImageContainer to the list of those interested in the results of the request.
+		 */
+		public void addContainer(StringContainer container) {
+			mContainers.add(container);
+		}
+
+		/**
+		 * Detatches the bitmap container from the request and cancels the request if no one is left listening.
+		 * 
+		 * @param container
+		 *            The container to remove from the list
+		 * @return True if the request was canceled, false otherwise.
+		 */
+		public boolean removeContainerAndCancelIfNecessary(StringContainer container) {
+			mContainers.remove(container);
+			if (mContainers.size() == 0) {
+				mRequest.cancel();
+				return true;
+			}
+			return false;
+		}
+	}
+
+	private void batchResponse(String cacheKey, BatchedStringRequest request, final VolleyError error) {
+		mBatchedResponses.put(cacheKey, request);
+		// If we don't already have a batch delivery runnable in flight, make a new one.
+		// Note that this will be used to deliver responses to all callers in mBatchedResponses.
+		if (mRunnable == null) {
+			mRunnable = new Runnable() {
+				@Override
+				public void run() {
+					for (BatchedStringRequest bir : mBatchedResponses.values()) {
+						for (StringContainer container : bir.mContainers) {
+							// If one of the callers in the batched request canceled the request
+							// after the response was received but before it was delivered,
+							// skip them.
+							if (container.mListener == null) {
+								continue;
+							}
+							if (error == null) {
+								container.mString = bir.mResponseString;
+								container.mListener.onResponse(container, false);
+							} else {
+								container.mListener.onErrorResponse(error);
+							}
+						}
+					}
+					mBatchedResponses.clear();
+					mRunnable = null;
+				}
+
+			};
+			// Post the runnable.
+			mHandler.postDelayed(mRunnable, mBatchResponseDelayMs);
+		}
+	}
+
+	private void throwIfNotOnMainThread() {
+		if (Looper.myLooper() != Looper.getMainLooper()) {
+			throw new IllegalStateException("StringLoader must be invoked from the main thread.");
+		}
+	}
+
+	private static String getCacheKey(String url) {
+		return new StringBuilder(url.length() + 12).append("#W").append("#H").append(url).toString();
+	}
+}
