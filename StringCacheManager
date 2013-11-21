@@ -1,0 +1,58 @@
+public class StringCacheManager {
+	private static StringCacheManager mInstance;
+
+	private StringLoader mStringLoader;
+
+	private StringCache mLOneStringCache;
+	private StringCache mLTwoStringCache;
+	private StringCache mStringCache;
+
+	public static StringCacheManager getInstance() {
+		if (mInstance == null)
+			mInstance = new StringCacheManager();
+
+		return mInstance;
+	}
+
+	public void init(Context context, String uniqueName, int cacheSize) {
+
+		mLOneStringCache = new StringLruStringCache(cacheSize);
+		mLTwoStringCache = new DiskLruStringCache(context, uniqueName, cacheSize);
+		mStringCache = new ComplexStringCache(mLOneStringCache, mLTwoStringCache);
+
+		mStringLoader = new StringLoader(RequestManager.getRequestQueue(), mStringCache);
+	}
+
+	public String getString(String url) {
+		try {
+			url = createKey(url);
+			return mStringCache.getString(url);
+		} catch (NullPointerException e) {
+			throw new IllegalStateException("Disk Cache Not initialized");
+		}
+	}
+
+	public void putString(String url, String bitmap) {
+		try {
+			url = createKey(url);
+			mStringCache.putString(url, bitmap);
+		} catch (NullPointerException e) {
+			throw new IllegalStateException("Disk Cache Not initialized");
+		}
+	}
+
+	public void getString(String url, StringListener listener, boolean force) {
+		mStringLoader.get(url, listener, force);
+	}
+
+	/**
+	 * @return instance of the image loader
+	 */
+	public StringLoader getStringLoader() {
+		return mStringLoader;
+	}
+
+	private String createKey(String url) {
+		return String.valueOf(url.hashCode());
+	}
+}
