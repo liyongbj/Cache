@@ -15,11 +15,16 @@ public class ComplexImageCache implements ImageCache {
 		}
 
 		if (mOneImageCache != null) {
-			return mOneImageCache.getBitmap(url);
-		}
+			Bitmap result = mOneImageCache.getBitmap(url);
+			if (result == null && mTwoImageCache != null) {
+				Bitmap cache = mTwoImageCache.getBitmap(url);
 
-		if (mTwoImageCache != null) {
-			return mTwoImageCache.getBitmap(url);
+				// 将从二级缓存中取得的结果添加到一级缓存
+				if (cache != null)
+					mOneImageCache.putBitmap(url, cache);
+
+				return cache;
+			}
 		}
 
 		return null;
