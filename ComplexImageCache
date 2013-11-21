@@ -1,0 +1,42 @@
+public class ComplexImageCache implements ImageCache {
+
+	private ImageCache mOneImageCache;
+	private ImageCache mTwoImageCache;
+
+	public ComplexImageCache(ImageCache lOneCache, ImageCache lTwoCache) {
+		mOneImageCache = lOneCache;
+		mTwoImageCache = lTwoCache;
+	}
+
+	@Override
+	public Bitmap getBitmap(String url) {
+		if (TextUtils.isEmpty(url)) {
+			return null;
+		}
+
+		if (mOneImageCache != null) {
+			return mOneImageCache.getBitmap(url);
+		}
+
+		if (mTwoImageCache != null) {
+			return mTwoImageCache.getBitmap(url);
+		}
+
+		return null;
+	}
+
+	@Override
+	public void putBitmap(String url, Bitmap bitmap) {
+		if (TextUtils.isEmpty(url)) {
+			return;
+		}
+
+		if (mOneImageCache != null) {
+			mOneImageCache.putBitmap(url, bitmap);
+		}
+
+		if (mTwoImageCache != null) {
+			mTwoImageCache.putBitmap(url, bitmap);
+		}
+	}
+}
