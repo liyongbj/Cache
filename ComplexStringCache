@@ -1,0 +1,46 @@
+public class ComplexStringCache implements StringCache {
+	private StringCache mOneStringCache;
+	private StringCache mTwoStringCache;
+
+	public ComplexStringCache(StringCache lOneCache, StringCache lTwoCache) {
+		mOneStringCache = lOneCache;
+		mTwoStringCache = lTwoCache;
+	}
+
+	@Override
+	public String getString(String url) {
+		if (TextUtils.isEmpty(url)) {
+			return null;
+		}
+
+		if (mOneStringCache != null) {
+			String result = mOneStringCache.getString(url);
+			if (result == null && mTwoStringCache != null) {
+				String cache = mTwoStringCache.getString(url);
+
+				// 将从二级缓存中取得的结果添加到一级缓存
+				if (cache != null)
+					mOneStringCache.putString(url, cache);
+
+				return cache;
+			}
+		}
+
+		return null;
+	}
+
+	@Override
+	public void putString(String url, String string) {
+		if (TextUtils.isEmpty(url)) {
+			return;
+		}
+
+		if (mOneStringCache != null) {
+			mOneStringCache.putString(url, string);
+		}
+
+		if (mTwoStringCache != null) {
+			mTwoStringCache.putString(url, string);
+		}
+	}
+}
